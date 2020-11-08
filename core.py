@@ -86,12 +86,16 @@ class Atmosphere:
             beta_s_m = np.outer(np.exp(-h_int/self.Hm), self.beta0_s_m)
             f_int = np.zeros((self.Nint, self.Nf))
             for iy, y in enumerate(y_int):
+                # Txy * J[L](x,v,s) = Txy * sum(beta_s_i*Pi(v.s)*L(y,s,s)*As)
                 Lyss = self.total_radiance(y, s, s, inscatter=False)
                 f_int[iy] = \
-                    np.multiply(Lyss,  Pr*beta_s_r[iy, :] + Pm*beta_s_m[iy, :])
+                    np.multiply(np.divide(Txv, self._transmittance(y, v)),
+                                np.multiply(Lyss,
+                                            Pr*beta_s_r[iy, :] +
+                                            Pm*beta_s_m[iy, :]))
             f_int = f_int * self.AAstar
             for il, l in enumerate(self.lambdas):
-                S[il] = np.exp(-np.trapz(f_int[:, il], t_int))
+                S[il] = np.trapz(f_int[:, il], t_int)
         # Totals
         L = L0 + R + S
         return L
