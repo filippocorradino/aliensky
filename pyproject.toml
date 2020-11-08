@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aliensky"
-version = "0.0.0"
+version = "0.1.0"
 description = "Simulating the appearance of alien worlds skies through clear sky models"
 authors = ["Filippo Corradino <filippo.corradino@gmail.com>"]
 license = "MIT"
