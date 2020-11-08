@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "aliensky"
+version = "0.0.0"
+description = "Simulating the appearance of alien worlds skies through clear sky models"
+authors = ["Filippo Corradino <filippo.corradino@gmail.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+numpy = "^1.19.4"
+scipy = "^1.5.4"
+
+[tool.poetry.dev-dependencies]
+flake8 = "^3.8.4"
+matplotlib = "^3.3.2"
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
