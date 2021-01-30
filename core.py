@@ -3,14 +3,23 @@
 """
 Alien Sky
 
-
+[BR08] E. Bruneton, F. Neyret "Precomputed Atmospheric Scattering"
+       Proceedings of the 19th Eurographics conference on Rendering, 2008
+       https://doi.org/10.1111/j.1467-8659.2008.01245.x
+       https://hal.inria.fr/inria-00288758/document
 """
 
 __author__ = "Filippo Corradino"
 __email__ = "filippo.corradino@gmail.com"
 
 from enum import Enum
+from PIL import Image
+from scipy.interpolate import interp1d, RectBivariateSpline
 import numpy as np
+
+import cProfile
+import io
+import pstats
 
 
 class Atmosphere:
@@ -27,25 +36,40 @@ class Atmosphere:
         self.Nf = 3
         self.Nh = 60
         self.Nz = 36
-        self.Nint = 500
+        self.Nint = 50
+        self.Vint = np.linspace(0, 1, self.Nint)
         # Initialization
         self.lambdas = np.array([680e-9, 550e-9, 440e-9])
         self.beta0_s_r = np.array([5.8e-6, 13.5e-6, 33.1e-6])
-        self.beta0_s_m = np.array([0e-6, 0e-6, 0e-6])  # TODO: use actual values
+        self.beta0_s_m = np.array([1e-6, 1e-6, 1e-6])  # TODO: use actual values
         self.beta0_e_r = 1.0*self.beta0_s_r
         self.beta0_e_m = 2.1*self.beta0_s_m
         self.g_mie = 0.76
         # Star/Planet params  # TODO: move them to star/planet definition
-        self.Lstar = np.array([100, 100, 100])  # TODO: use actual values
-        self.ARstar = np.deg2rad(0.5/2)  # Angular radius of the star
+        self.Lstar = np.array([255, 255, 255])  # TODO: use actual values
+        self.ARstar = np.deg2rad(5/2)  # Angular radius of the star
         self.AAstar = np.pi*(self.ARstar**2)  # Angular area of star
         self.cosARstar = np.cos(self.ARstar)  # Cosine of angular radius of star
         self.albedo = 0.39
+        # Precalculate
+        self._precalculate()
         # Checks
         assert len(self.lambdas) == self.Nf
         assert len(self.beta0_s_r) == self.Nf
         assert len(self.beta0_s_m) == self.Nf
         assert len(self.Lstar) == self.Nf
+
+    def _precalculate(self):
+        # Scattering Coefficients
+        g = self.g_mie
+        mu_samples = np.linspace(-1, +1, self.Nz)
+        Pr_samples = 3/16/np.pi * (1+mu_samples**2)
+        Pm_samples = 3/8/np.pi * (((1-g**2)*(1+mu_samples**2)) /
+                                  ((2+g**2)*((1+g**2-2*g*mu_samples)**1.5)))
+        self._Pr = interp1d(mu_samples, Pr_samples)
+        self._Pm = interp1d(mu_samples, Pm_samples)
+        # Transmittance
+        # x,v --> r,z --> r,mu --> ur,umu
 
     def total_radiance(self, x, v, s, inscatter=True):
         """
@@ -70,13 +94,14 @@ class Atmosphere:
         if endray is Atmosphere.Border.GND:
             I = self.albedo * self.AAstar * \
                 np.multiply(np.dot(s, n0),
-                            np.multiply(self.Lstar, self._transmittance(x0, s)))
+                            np.multiply(self.Lstar,
+                                        self._transmittance(x0, s)))
             R = np.multiply(I, Txv)
         # 3 - Inscatter
         # TODO: add inscatter from ground reflected light!
         S = np.zeros(self.Nf)
         if inscatter:
-            t_int = np.linspace(0, t0, self.Nint)
+            t_int = t0*self.Vint
             y_int = x + np.outer(t_int, v)
             h_int = np.linalg.norm(y_int, axis=1) - self.Rb
             mu = np.dot(v, s)
@@ -100,12 +125,12 @@ class Atmosphere:
         L = L0 + R + S
         return L
 
-    def _Pr(self, mu):
-        return 3/16/np.pi*(1+mu**2)
+    # def _Pr(self, mu):
+    #     return 3/16/np.pi*(1+mu**2)
 
-    def _Pm(self, mu):
-        g = self.g_mie
-        return 3/8/np.pi*((1-g**2)*(1+mu**2))/((2+g**2)*((1+g**2-2*g*mu)**1.5))
+    # def _Pm(self, mu):
+    #     g = self.g_mie
+    #     return 3/8/np.pi*((1-g**2)*(1+mu**2))/((2+g**2)*((1+g**2-2*g*mu)**1.5))
 
     def _xv2rz(self, x, v):
         """
@@ -155,7 +180,7 @@ class Atmosphere:
         """
         r, z = self._xv2rz(x, v)
         t0, _ = self._endray(r, z)
-        t_int = np.linspace(0, t0, self.Nint)
+        t_int = t0*self.Vint
         y_int = np.array([r+t_int*np.cos(z), t_int*np.sin(z)])
         h_int = np.linalg.norm(y_int, axis=0) - self.Rb
         T_vec = np.zeros(self.Nf)
@@ -166,12 +191,49 @@ class Atmosphere:
         return T_vec
 
 
+def profile(func):
+    def wrapper(*args, **kwargs):
+        pr = cProfile.Profile()
+        pr.enable()
+        retval = func(*args, **kwargs)
+        pr.disable()
+        s = io.StringIO()
+        sortby = pstats.SortKey.CUMULATIVE  # 'cumulative'
+        ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+        ps.print_stats()
+        print(s.getvalue())
+        return retval
+    return wrapper
+
+
+@profile
 def main():
     atmosphere = Atmosphere()
     x = np.array([0, 0, atmosphere.Rb])
-    v = np.array([1, 0, 0])
-    s = np.array([0, 0, 1])
-    print(atmosphere.total_radiance(x, v, s))
+    s = np.array([1, 0, 0])
+    s = s / np.linalg.norm(s)
+    image_size = 32
+    radius = image_size/2
+    rgbArray = np.zeros((image_size, image_size, 3), 'uint8')
+    counter = 0
+    p_vec = np.linspace(-radius, +radius, image_size)
+    for ix in range(image_size):
+        for iy in range(image_size):
+            px = p_vec[ix]
+            py = p_vec[iy]
+            el = np.pi/2 * (1 - np.sqrt(px**2 + py**2)/radius)
+            if el > 0:
+                az = np.arctan2(py, px)
+                v = np.array([np.cos(el)*np.cos(az),
+                              np.cos(el)*np.sin(az),
+                              np.sin(el)])
+                radiance = atmosphere.total_radiance(x, v, s) * 1000
+                rgbArray[ix, iy, :] = radiance
+                print("{:08d} of {:08d} pixels rendered - radiance: {}"
+                      .format(counter, image_size**2, radiance))
+            counter = counter + 1
+    img = Image.fromarray(rgbArray)
+    img.save('myimg.jpeg')
     return
 
 
