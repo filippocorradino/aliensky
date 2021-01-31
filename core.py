@@ -35,7 +35,7 @@ class Atmosphere:
         # Calcs Params
         self.Nf = 3
         self.Nh = 60
-        self.Nz = 36
+        self.Nm = 36
         self.Nint = 50
         self.Vint = np.linspace(0, 1, self.Nint)
         # Initialization
@@ -62,14 +62,14 @@ class Atmosphere:
     def _precalculate(self):
         # Scattering Coefficients
         g = self.g_mie
-        mu_samples = np.linspace(-1, +1, self.Nz)
-        Pr_samples = 3/16/np.pi * (1+mu_samples**2)
-        Pm_samples = 3/8/np.pi * (((1-g**2)*(1+mu_samples**2)) /
-                                  ((2+g**2)*((1+g**2-2*g*mu_samples)**1.5)))
-        self._Pr = interp1d(mu_samples, Pr_samples)
-        self._Pm = interp1d(mu_samples, Pm_samples)
+        m_samples = np.linspace(-1, +1, self.Nm)
+        Pr_samples = 3/16/np.pi * (1+m_samples**2)
+        Pm_samples = 3/8/np.pi * (((1-g**2)*(1+m_samples**2)) /
+                                  ((2+g**2)*((1+g**2-2*g*m_samples)**1.5)))
+        self._Pr = interp1d(m_samples, Pr_samples)
+        self._Pm = interp1d(m_samples, Pm_samples)
         # Transmittance
-        # x,v --> r,z --> r,mu --> ur,umu
+        # x,v --> r,m --> ur,um
 
     def total_radiance(self, x, v, s, inscatter=True):
         """
@@ -77,8 +77,8 @@ class Atmosphere:
         v is the view direction versor in planet-frame
         s is the star direction versor in planet-frame
         """
-        r, z = self._xv2rz(x, v)
-        t0, endray = self._endray(r, z)
+        r, m = self._xv2rm(x, v)
+        t0, endray = self._endray(r, m)
         x0 = x + t0*v
         n0 = x0 / np.linalg.norm(x0)
         Txv = self._transmittance(x, v)
@@ -132,40 +132,41 @@ class Atmosphere:
     #     g = self.g_mie
     #     return 3/8/np.pi*((1-g**2)*(1+mu**2))/((2+g**2)*((1+g**2-2*g*mu)**1.5))
 
-    def _xv2rz(self, x, v):
+    def _xv2rm(self, x, v):
         """
         x is the local position vector in planet-frame [m]
         v is the view direction versor in planet-frame
         r is the local radial distance from centre of planet [m]
-        z is the view zenith angle [rad]
+        m is the cosine of the view zenith angle
         r = |x|
-        z = arccos(x.v)/r
+        m = (x.v/r)
         """
         r = np.linalg.norm(x)
-        z = np.arccos(np.dot(x, v) / r)
-        return r, z
+        m = np.dot(x, v) / r
+        return r, m
 
-    def _endray(self, r, z):
+    def _endray(self, r, m):
         """
         Evaluates the length of a view ray and whether it ends on the ground or
         at the top of the atmosphere
         r is the local radial distance from centre of planet [m]
         z is the view zenith angle [rad]
+        m is the cosine of the view zenith angle (m = cos(z))
         view ray parametric coordinates: [r+cos(z)t, sin(z)t]
         t at intersections with a shell of radius R:
-        t = r*cos(z) +/- r*sqrt((R/r)^2 - sin(z)^2)
+        t = -r*m +/- r*sqrt((R/r)^2 + m^2 - 1)
         """
-        delta_b = (self.Rb/r)**2 - (np.sin(z))**2
-        delta_t = (self.Rt/r)**2 - (np.sin(z))**2
-        if (z > np.pi/2) and (delta_b > 0):   
+        delta_b = (self.Rb/r)**2 + m**2 - 1
+        delta_t = (self.Rt/r)**2 + m**2 - 1
+        if (m < 0) and (delta_b > 0):
             # End of ray is on the ground
             # Take first intersection - second one is through Earth
-            t0 = r * (-np.cos(z) - np.sqrt(delta_b))
+            t0 = r * (-m - np.sqrt(delta_b))
             return t0, Atmosphere.Border.GND
         else:
             # End of ray is on the top of the atmosphere
             # Take second intersection - first one is behind us
-            t0 = r * (-np.cos(z) + np.sqrt(delta_t))
+            t0 = r * (-m + np.sqrt(delta_t))
             return t0, Atmosphere.Border.TOA
 
     def _transmittance(self, x, v):
@@ -174,14 +175,17 @@ class Atmosphere:
         v is the view direction versor in planet-frame
         r is the local radial distance from centre of planet [m]
         z is the view zenith angle [rad]
+        m is the cosine of the view zenith angle (m = cos(z))
+        n is the   sine of the view zenith angle (n = sin(z))
         view ray parametric coordinates: [r+cos(z)t, sin(z)t]
         t at intersections with a shell of radius R:
-        t = r*cos(z) +/- r*sqrt((R/r)^2 - sin(z)^2)
+        t = -r*m +/- r*sqrt((R/r)^2 + m^2 - 1)
         """
-        r, z = self._xv2rz(x, v)
-        t0, _ = self._endray(r, z)
+        r, m = self._xv2rm(x, v)
+        n = np.sqrt(1 - m**2)  # Limits z to [0, pi] without loss of generality
+        t0, _ = self._endray(r, m)
         t_int = t0*self.Vint
-        y_int = np.array([r+t_int*np.cos(z), t_int*np.sin(z)])
+        y_int = np.array([r+t_int*m, t_int*n])
         h_int = np.linalg.norm(y_int, axis=0) - self.Rb
         T_vec = np.zeros(self.Nf)
         for il, l in enumerate(self.lambdas):
