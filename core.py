@@ -33,9 +33,9 @@ class Atmosphere:
         self.Hr = 8000
         self.Hm = 1200
         # Calcs Params
-        self.Nf = 3
-        self.Nh = 60
-        self.Nm = 36
+        self.Nl = 3
+        self.Nr = 60  # Altitude layers
+        self.Nm = 36  # Zenith angle layers
         self.Nint = 50
         self.Vint = np.linspace(0, 1, self.Nint)
         # Initialization
@@ -54,10 +54,10 @@ class Atmosphere:
         # Precalculate
         self._precalculate()
         # Checks
-        assert len(self.lambdas) == self.Nf
-        assert len(self.beta0_s_r) == self.Nf
-        assert len(self.beta0_s_m) == self.Nf
-        assert len(self.Lstar) == self.Nf
+        assert len(self.lambdas) == self.Nl
+        assert len(self.beta0_s_r) == self.Nl
+        assert len(self.beta0_s_m) == self.Nl
+        assert len(self.Lstar) == self.Nl
 
     def _precalculate(self):
         # Scattering Coefficients
@@ -69,6 +69,23 @@ class Atmosphere:
         self._Pr = interp1d(m_samples, Pr_samples)
         self._Pm = interp1d(m_samples, Pm_samples)
         # Transmittance
+        ur_samples = np.linspace(0, 1, self.Nr)  # TODO: make into logspace
+        um_samples = np.linspace(0, 1, self.Nm)
+        # TODO: vectorize this
+        self._T = []
+        count = 0
+        total = self.Nr*self.Nm
+        Tmap = np.zeros((self.Nl, self.Nr, self.Nm))
+        for ir in range(self.Nr):
+            for im in range(self.Nm):
+                Tmap[:, ir, im] = self._transmittance_precalc(
+                    ur_samples[ir], um_samples[im]
+                )
+                count += 1
+                print(f"Processed {count} of {total}: {Tmap[:, ir, im]}")
+        for il in range(self.Nl):
+            Tcur = np.squeeze(Tmap[il, :, :])
+            self._T.append(RectBivariateSpline(ur_samples, um_samples, Tcur))
         # x,v --> r,m --> ur,um
 
     def total_radiance(self, x, v, s, inscatter=True):
@@ -87,19 +104,17 @@ class Atmosphere:
         if endray is Atmosphere.Border.TOA:
             if np.dot(s, v) > self.cosARstar:
                 # TODO: scale radiance if only part of the pixel is occupied?
-                L0 = np.multiply(self.Lstar, Txv)
+                L0 = self.Lstar * Txv
         # 2 - Reflected light
         # NB: no inscatter considered in sun-ground ray
         R = 0
         if endray is Atmosphere.Border.GND:
-            I = self.albedo * self.AAstar * \
-                np.multiply(np.dot(s, n0),
-                            np.multiply(self.Lstar,
-                                        self._transmittance(x0, s)))
-            R = np.multiply(I, Txv)
+            I = self.albedo * self.AAstar * np.dot(s, n0) * \
+                self.Lstar * self._transmittance(x0, s)
+            R = I * Txv
         # 3 - Inscatter
         # TODO: add inscatter from ground reflected light!
-        S = np.zeros(self.Nf)
+        S = np.zeros(self.Nl)
         if inscatter:
             t_int = t0*self.Vint
             y_int = x + np.outer(t_int, v)
@@ -109,15 +124,12 @@ class Atmosphere:
             Pm = self._Pm(mu)
             beta_s_r = np.outer(np.exp(-h_int/self.Hr), self.beta0_s_r)
             beta_s_m = np.outer(np.exp(-h_int/self.Hm), self.beta0_s_m)
-            f_int = np.zeros((self.Nint, self.Nf))
+            f_int = np.zeros((self.Nint, self.Nl))
             for iy, y in enumerate(y_int):
-                # Txy * J[L](x,v,s) = Txy * sum(beta_s_i*Pi(v.s)*L(y,s,s)*As)
+                # Txy * J[L](x,v,s) = Txv * sum(beta_s_i*Pi(v.s)*L(y,s,s)*As)
                 Lyss = self.total_radiance(y, s, s, inscatter=False)
-                f_int[iy] = \
-                    np.multiply(np.divide(Txv, self._transmittance(y, v)),
-                                np.multiply(Lyss,
-                                            Pr*beta_s_r[iy, :] +
-                                            Pm*beta_s_m[iy, :]))
+                f_int[iy] = Txv / self._transmittance(y, v) * Lyss * \
+                    (Pr*beta_s_r[iy, :] + Pm*beta_s_m[iy, :])
             f_int = f_int * self.AAstar
             for il, l in enumerate(self.lambdas):
                 S[il] = np.trapz(f_int[:, il], t_int)
@@ -132,7 +144,8 @@ class Atmosphere:
     #     g = self.g_mie
     #     return 3/8/np.pi*((1-g**2)*(1+mu**2))/((2+g**2)*((1+g**2-2*g*mu)**1.5))
 
-    def _xv2rm(self, x, v):
+    @staticmethod
+    def _xv2rm(x, v):
         """
         x is the local position vector in planet-frame [m]
         v is the view direction versor in planet-frame
@@ -145,6 +158,46 @@ class Atmosphere:
         m = np.dot(x, v) / r
         return r, m
 
+    def _urum2rm(self, ur, um):
+        """
+        ur is the adimensional height in the atmosphere [0, 1]
+        um is the adimensional zenith angle [0, 1]
+        r is the local radial distance from centre of planet [m]
+        z is the view zenith angle [rad]
+        m is the cosine of the view zenith angle (m = cos(z))
+        """
+        # TODO: make a shader?
+        # mu = +1  um = 1.0
+        # mu = muh um = 0.5  # Horizon-grazing
+        # mu = -1  um = 0.0
+        r = self.Rb + (self.Rt-self.Rb)*ur
+        muh = -np.sqrt(1 - (self.Rb/r)**2)
+        if um < 0.5:
+            # GND intersect
+            m = 2*(muh+1)*um - 1
+        else:
+            # TOA intersect
+            m = (1-muh)*(2*um-1) + muh
+        return r, m
+
+    def _rm2urum(self, r, m):
+        """
+        ur is the adimensional height in the atmosphere [0, 1]
+        um is the adimensional zenith angle [0, 1]
+        r is the local radial distance from centre of planet [m]
+        z is the view zenith angle [rad]
+        m is the cosine of the view zenith angle (m = cos(z))
+        """
+        # TODO: make a shader?
+        ur = (r-self.Rb) / (self.Rt-self.Rb)
+        muh = -np.sqrt(1 - (self.Rb/r)**2)  # TODO: map?
+        t0, boundary = self._endray(r, m)
+        if boundary is Atmosphere.Border.GND:
+            um = (m+1)/2/(muh+1)
+        else:
+            um = ((m-muh)/(1-muh) + 1) / 2
+        return ur, um
+
     def _endray(self, r, m):
         """
         Evaluates the length of a view ray and whether it ends on the ground or
@@ -152,7 +205,8 @@ class Atmosphere:
         r is the local radial distance from centre of planet [m]
         z is the view zenith angle [rad]
         m is the cosine of the view zenith angle (m = cos(z))
-        view ray parametric coordinates: [r+cos(z)t, sin(z)t]
+        n is the   sine of the view zenith angle (n = sin(z))
+        view ray parametric coordinates: [r+mt, nt]
         t at intersections with a shell of radius R:
         t = -r*m +/- r*sqrt((R/r)^2 + m^2 - 1)
         """
@@ -169,29 +223,36 @@ class Atmosphere:
             t0 = r * (-m + np.sqrt(delta_t))
             return t0, Atmosphere.Border.TOA
 
-    def _transmittance(self, x, v):
+    def _transmittance_precalc(self, ur, um):
         """
-        x is the local position vector in planet-frame [m]
-        v is the view direction versor in planet-frame
-        r is the local radial distance from centre of planet [m]
+        ur is the adimensional height in the atmosphere [0, 1]
+        um is the adimensional zenith angle [0, 1]
         z is the view zenith angle [rad]
         m is the cosine of the view zenith angle (m = cos(z))
         n is the   sine of the view zenith angle (n = sin(z))
-        view ray parametric coordinates: [r+cos(z)t, sin(z)t]
-        t at intersections with a shell of radius R:
-        t = -r*m +/- r*sqrt((R/r)^2 + m^2 - 1)
+        view ray parametric coordinates: [r+mt, nt]
         """
-        r, m = self._xv2rm(x, v)
+        r, m = self._urum2rm(ur, um)
         n = np.sqrt(1 - m**2)  # Limits z to [0, pi] without loss of generality
         t0, _ = self._endray(r, m)
         t_int = t0*self.Vint
         y_int = np.array([r+t_int*m, t_int*n])
         h_int = np.linalg.norm(y_int, axis=0) - self.Rb
-        T_vec = np.zeros(self.Nf)
+        T_vec = np.zeros(self.Nl)
         for il, l in enumerate(self.lambdas):
             f_int = (self.beta0_e_r[il] * np.exp(-h_int/self.Hr) +
                      self.beta0_e_m[il] * np.exp(-h_int/self.Hm))
             T_vec[il] = np.exp(-np.trapz(f_int, t_int))
+        return T_vec
+
+    def _transmittance(self, x, v):
+        """
+        x is the local position vector in planet-frame [m]
+        v is the view direction versor in planet-frame
+        """
+        r, m = self._xv2rm(x, v)
+        ur, um = self._rm2urum(r, m)
+        T_vec = np.squeeze(np.array([T(ur, um) for T in self._T]))
         return T_vec
 
 
