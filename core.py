@@ -13,6 +13,7 @@ __author__ = "Filippo Corradino"
 __email__ = "filippo.corradino@gmail.com"
 
 from enum import Enum
+import pickle
 from PIL import Image
 from scipy.interpolate import interp1d, RectBivariateSpline
 import numpy as np
@@ -60,6 +61,20 @@ class Atmosphere:
         assert len(self.beta0_s_r) == self.Nl
         assert len(self.beta0_s_m) == self.Nl
         assert len(self.Lstar) == self.Nl
+
+    @classmethod
+    def load(cls, file_path):
+        """Unpickle Atmosphere from a file
+        """
+        with open(file_path, 'rb') as fp:
+            obj = pickle.load(fp)
+            return obj
+
+    def save(self, file_path):
+        """Pickle Atmosphere so we can reload it later
+        """
+        with open(file_path, 'wb') as fp:
+            pickle.dump(self, fp)
 
     def _precalculate(self):
         # Scattering Coefficients
@@ -334,7 +349,9 @@ def profile(func):
 
 @profile
 def main():
-    atmosphere = Atmosphere()
+    # atmosphere = Atmosphere()
+    # atmosphere.save('atmo.pkl')
+    atmosphere = Atmosphere.load('atmo.pkl')
     x = np.array([0, 0, atmosphere.Rb])
     s = np.array([1, 0, 0.5])
     s = s / np.linalg.norm(s)
