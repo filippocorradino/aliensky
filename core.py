@@ -127,7 +127,7 @@ class Atmosphere:
         L0 = np.zeros((self.Nl, n))
         S = np.zeros((self.Nl, n))
         R = np.zeros((self.Nl, n))
-        ig = (endray == self.Border.TOA)   # TOA intersect logical vector
+        ig = (endray == self.Border.GND)   # GND intersect logical vector
         ix = (np.sum(s*v, axis=0) > self.cosARstar)
         # 1 - Direct light
         # TODO: scale radiance if only part of the pixel is occupied?
@@ -349,7 +349,7 @@ def main():
     v = np.stack((np.cos(el)*np.cos(az),
                   np.cos(el)*np.sin(az),
                   np.sin(el)))
-    radiance = atmosphere.total_radiance(x, v, s) * 100
+    radiance = atmosphere.total_radiance(x, v, s) * 1000
     rgbArray = radiance.T.reshape((image_size, image_size, 3)).astype('uint8')
     rgbArray[(el_mesh < 0), :] = 0  # Mask elevation < 0
     img = Image.fromarray(rgbArray)
